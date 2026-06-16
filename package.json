@@ -1,0 +1,23 @@
+{
+  "name": "forgespecs",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "db:generate": "pnpm --filter @forgespecs/db exec prisma generate",
+    "db:validate": "pnpm --filter @forgespecs/db exec prisma validate"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.8",
+    "typescript": "^5.9.3",
+    "@types/node": "^22.18.9"
+  }
+}

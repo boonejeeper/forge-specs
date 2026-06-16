@@ -1,0 +1,670 @@
+// ForgeSpecs — Prisma schema
+// Postgres + pgvector. Better Auth owns User/Session/Account/Verification.
+// Domain models relate to User but never redefine auth-owned columns.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector, pg_trgm]
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Auth (Better Auth core schema). Better Auth's Prisma adapter expects these
+// model/field names. We extend User only via relations to domain models.
+// ──────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sessions Session[]
+  accounts Account[]
+
+  // Domain relations
+  memberships     Membership[]
+  authoredDocs    Document[]        @relation("DocumentAuthor")
+  comments        Comment[]
+  suggestions     Suggestion[]
+  reviews         Review[]
+  mentionsMade    Mention[]         @relation("MentionActor")
+  mentionsTarget  Mention[]         @relation("MentionTarget")
+  notifications   Notification[]    @relation("NotificationRecipient")
+  activityEvents  ActivityEvent[]   @relation("ActivityActor")
+  createdProjects Project[]         @relation("ProjectCreator")
+  templates       Template[]        @relation("TemplateAuthor")
+  documentVersions DocumentVersion[] @relation("VersionAuthor")
+  generationJobs  GenerationJob[]   @relation("GenerationJobCreator")
+  ssoProviders    SsoProvider[]     @relation("UserSsoProviders")
+  prLinks         PullRequestLink[] @relation("PullRequestLinkCreator")
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// OIDC/SAML SSO providers (managed by @better-auth/sso — M11). Field names match
+// the plugin's schema exactly. oidcConfig / samlConfig are JSON-as-string blobs
+// the plugin serializes. Rows are created via /api/auth/sso/register (we seed
+// them at boot from env when SSO_* is configured — see lib/auth/sso.ts).
+model SsoProvider {
+  id             String   @id @default(cuid())
+  issuer         String
+  oidcConfig     String?
+  samlConfig     String?
+  userId         String?
+  user           User?    @relation("UserSsoProviders", fields: [userId], references: [id], onDelete: SetNull)
+  providerId     String   @unique
+  organizationId String?
+  domain         String
+
+  @@index([userId])
+  @@map("sso_provider")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Enums
+// ──────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  OWNER
+  ARCHITECT
+  ENGINEER
+  REVIEWER
+  VIEWER
+}
+
+enum DocumentType {
+  VISION
+  PRD
+  RFC
+  ADR
+  API_SPEC
+  DB_SCHEMA
+  WORKFLOW
+  RUNBOOK
+  TASK_PLAN
+}
+
+enum DocumentStatus {
+  DRAFT
+  REVIEW
+  APPROVED
+  IMPLEMENTING
+  IMPLEMENTED
+  DEPRECATED
+}
+
+enum DependencyKind {
+  IMPLEMENTS
+  REFERENCES
+  DERIVES_FROM
+  SUPERSEDES
+  BLOCKS
+}
+
+enum SuggestionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum ReviewDecision {
+  APPROVE
+  REQUEST_CHANGES
+  COMMENT
+}
+
+enum NotificationType {
+  MENTION
+  COMMENT
+  REVIEW_REQUESTED
+  REVIEW_DECIDED
+  SUGGESTION
+  STATUS_CHANGE
+  ASSIGNMENT
+  SYSTEM
+}
+
+enum ActivityType {
+  DOCUMENT_CREATED
+  DOCUMENT_UPDATED
+  STATUS_CHANGED
+  VERSION_CREATED
+  COMMENT_ADDED
+  SUGGESTION_CREATED
+  SUGGESTION_RESOLVED
+  REVIEW_SUBMITTED
+  MEMBER_ADDED
+  MEMBER_REMOVED
+  MEMBER_ROLE_CHANGED
+  DEPENDENCY_ADDED
+  VERSION_RESTORED
+  TEMPLATE_APPLIED
+  SSO_LOGIN
+  PR_LINKED
+  PR_STATUS_CHANGED
+}
+
+enum TemplateScope {
+  GLOBAL
+  WORKSPACE
+}
+
+enum GenerationJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum GenerationJobKind {
+  ARCHITECTURE
+  RFC
+  TASKS
+  EPICS
+  REPO_STRUCTURE
+  AGENT_PROMPTS
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Tenancy: Workspace / Project / Membership
+// ──────────────────────────────────────────────────────────────────────────
+
+model Workspace {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects    Project[]
+  memberships Membership[]
+  templates   Template[]
+  activityEvents ActivityEvent[]
+
+  @@map("workspace")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  slug        String
+  name        String
+  description String?
+  // Soft-archive: archived projects are hidden by default but not deleted.
+  archivedAt  DateTime?
+  createdById String?
+  createdBy   User?    @relation("ProjectCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  documents   Document[]
+  memberships Membership[]
+  generationJobs GenerationJob[]
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@map("project")
+}
+
+// Polymorphic at two scopes: workspace-wide membership, optionally overridden
+// per project. The most-specific (project) membership wins in RBAC resolution.
+model Membership {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  role        Role
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // One membership row per (user, workspace, project|null).
+  @@unique([userId, workspaceId, projectId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("membership")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Documents & content
+// ──────────────────────────────────────────────────────────────────────────
+
+model Document {
+  id          String         @id @default(cuid())
+  projectId   String
+  project     Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  authorId    String?
+  author      User?          @relation("DocumentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  type        DocumentType
+  status      DocumentStatus @default(DRAFT)
+  title       String
+  slug        String
+
+  // Agent-readiness frontmatter: { status, owner, version, dependencies, implementation_state, ... }
+  frontmatter Json           @default("{}")
+
+  // Compacted CRDT state (folded Yjs document). Source of truth for the body.
+  yDocState   Bytes?
+
+  // Derived projection of the body for read/AI/search paths.
+  contentJSON Json?
+  // Flattened text → tsvector + embeddings.
+  contentText String         @default("")
+
+  // Full-text search vector, maintained by a trigger over (title || contentText).
+  // Unsupported because Prisma has no native tsvector type.
+  searchVector Unsupported("tsvector")?
+
+  currentVersion Int          @default(0)
+
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  blocks       Block[]
+  yjsUpdates   YjsUpdate[]
+  versions     DocumentVersion[]
+  comments     Comment[]
+  suggestions  Suggestion[]
+  reviews      Review[]
+  mentions     Mention[]
+  embeddings   Embedding[]
+
+  dependenciesFrom Dependency[] @relation("DependencyFrom")
+  dependenciesTo   Dependency[] @relation("DependencyTo")
+  prLinks          PullRequestLink[]
+
+  @@unique([projectId, slug])
+  @@index([projectId])
+  @@index([type])
+  @@index([status])
+  @@map("document")
+}
+
+// Tree of blocks (fractional indexing via `order`). Projection target on compaction.
+model Block {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  parentId   String?
+  parent     Block?   @relation("BlockChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children   Block[]  @relation("BlockChildren")
+
+  order      Float
+  type       String
+  json       Json
+  text       String   @default("")
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  embeddings Embedding[]
+
+  @@index([documentId])
+  @@index([parentId])
+  @@map("block")
+}
+
+// Append-only Yjs update log. BigInt id for high-volume crash-safe writes.
+model YjsUpdate {
+  id         BigInt   @id @default(autoincrement())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  update     Bytes
+  createdAt  DateTime @default(now())
+
+  @@index([documentId, id])
+  @@map("yjs_update")
+}
+
+// Full snapshots at checkpoints (not diff chains) → O(1) restore.
+model DocumentVersion {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  versionNum   Int
+  contentJSON  Json
+  contentText  String   @default("")
+  yStateVector Bytes?
+  summary      String?
+  authorId     String?
+  author       User?    @relation("VersionAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  @@unique([documentId, versionNum])
+  @@index([documentId])
+  @@map("document_version")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Collaboration: comments / suggestions / reviews / mentions
+// ──────────────────────────────────────────────────────────────────────────
+
+model Comment {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  authorId   String?
+  author     User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  // Comment bodies live in Postgres; anchors (Yjs relative positions) here too.
+  body       String
+  anchor     Json?
+  blockId    String?
+
+  // Threading
+  parentId   String?
+  parent     Comment? @relation("CommentThread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies    Comment[] @relation("CommentThread")
+
+  resolved   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([documentId])
+  @@index([parentId])
+  @@map("comment")
+}
+
+model Suggestion {
+  id         String           @id @default(cuid())
+  documentId String
+  document   Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  authorId   String?
+  author     User?            @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  // jsondiffpatch delta over block JSON.
+  patch      Json
+  status     SuggestionStatus @default(PENDING)
+  rationale  String?
+
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([documentId])
+  @@index([status])
+  @@map("suggestion")
+}
+
+model Review {
+  id         String         @id @default(cuid())
+  documentId String
+  document   Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  reviewerId String?
+  reviewer   User?          @relation(fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  decision   ReviewDecision
+  // Pinned to the version reviewed.
+  versionNum Int
+  body       String?
+
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@index([documentId])
+  @@map("review")
+}
+
+model Mention {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  actorId    String?
+  actor      User?    @relation("MentionActor", fields: [actorId], references: [id], onDelete: SetNull)
+  targetId   String?
+  target     User?    @relation("MentionTarget", fields: [targetId], references: [id], onDelete: SetNull)
+
+  // isAgent mentions trigger AI runs.
+  isAgent    Boolean  @default(false)
+  agentName  String?
+  context    Json?
+
+  createdAt  DateTime @default(now())
+
+  @@index([documentId])
+  @@index([targetId])
+  @@map("mention")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Graph: dependencies
+// ──────────────────────────────────────────────────────────────────────────
+
+model Dependency {
+  id        String         @id @default(cuid())
+  fromDocId String
+  fromDoc   Document       @relation("DependencyFrom", fields: [fromDocId], references: [id], onDelete: Cascade)
+  toDocId   String
+  toDoc     Document       @relation("DependencyTo", fields: [toDocId], references: [id], onDelete: Cascade)
+  kind      DependencyKind
+  createdAt DateTime       @default(now())
+
+  @@unique([fromDocId, toDocId, kind])
+  @@index([fromDocId])
+  @@index([toDocId])
+  @@map("dependency")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Notifications & activity
+// ──────────────────────────────────────────────────────────────────────────
+
+model Notification {
+  id          String           @id @default(cuid())
+  recipientId String
+  recipient   User             @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  type        NotificationType
+  title       String
+  body        String?
+  link        String?
+  data        Json?
+  read        Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  @@index([recipientId, read])
+  @@map("notification")
+}
+
+model ActivityEvent {
+  id          String       @id @default(cuid())
+  workspaceId String
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actorId     String?
+  actor       User?        @relation("ActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+  type        ActivityType
+  // Loose reference to the affected entity (document id, etc.).
+  entityType  String?
+  entityId    String?
+  data        Json?
+  createdAt   DateTime     @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@map("activity_event")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Templates
+// ──────────────────────────────────────────────────────────────────────────
+
+model Template {
+  id          String        @id @default(cuid())
+  scope       TemplateScope @default(WORKSPACE)
+  workspaceId String?
+  workspace   Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  authorId    String?
+  author      User?         @relation("TemplateAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  name        String
+  description String?
+  type        DocumentType
+  content     Json
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([workspaceId])
+  @@index([scope])
+  @@map("template")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Embeddings (pgvector)
+// ──────────────────────────────────────────────────────────────────────────
+
+model Embedding {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  blockId    String?
+  block      Block?   @relation(fields: [blockId], references: [id], onDelete: SetNull)
+
+  chunkIndex Int
+  content    String
+  // Hash of `content` for dedupe / re-embed decisions.
+  contentHash String
+  model      String
+
+  // vector(1536) — matches text-embedding-3-small. Prisma has no vector type,
+  // so it is declared Unsupported and the column + HNSW index are created in
+  // the raw SQL migration.
+  embedding  Unsupported("vector(1536)")?
+
+  createdAt  DateTime @default(now())
+
+  @@unique([documentId, blockId, chunkIndex])
+  @@index([documentId])
+  @@map("embedding")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// AI generation jobs (M7) — resumable, crash-safe orchestration.
+// `progress` is the persisted job-state reducer output (which docRefs are done +
+// their created document ids), so a refresh/disconnect/crash resumes without
+// duplicating work. Idempotency is on (jobId, docRef) — tracked inside progress.
+// ──────────────────────────────────────────────────────────────────────────
+
+model GenerationJob {
+  id          String              @id @default(cuid())
+  projectId   String
+  project     Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdById String?
+  createdBy   User?               @relation("GenerationJobCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  kind        GenerationJobKind   @default(ARCHITECTURE)
+  status      GenerationJobStatus @default(PENDING)
+
+  // The generation inputs (idea/requirements/constraints/tech-prefs, etc.).
+  input       Json                @default("{}")
+  // Persisted job-state reducer output (GenerationJobState) — resume anchor.
+  progress    Json                @default("{}")
+  error       String?
+
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@index([projectId])
+  @@index([status])
+  @@map("generation_job")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// GitHub PR linkage (M11) — OPTIONAL, config-driven. Links a Document (spec /
+// task plan) to a GitHub pull request; the /api/webhooks/github route reflects
+// PR status (open/merged/closed) back onto the link. Absent GITHUB_WEBHOOK_SECRET
+// the webhook is inert; links can still be created/viewed manually.
+// ──────────────────────────────────────────────────────────────────────────
+
+enum PullRequestState {
+  OPEN
+  CLOSED
+  MERGED
+  DRAFT
+}
+
+model PullRequestLink {
+  id          String           @id @default(cuid())
+  documentId  String
+  document    Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdById String?
+  createdBy   User?            @relation("PullRequestLinkCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  // GitHub coordinates.
+  repoOwner   String
+  repoName    String
+  number      Int
+  url         String
+  title       String?
+  state       PullRequestState @default(OPEN)
+  merged      Boolean          @default(false)
+
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  // One link per (document, repo, PR number).
+  @@unique([documentId, repoOwner, repoName, number])
+  // The webhook looks up links by repo + PR number to update status.
+  @@index([repoOwner, repoName, number])
+  @@index([documentId])
+  @@map("pull_request_link")
+}

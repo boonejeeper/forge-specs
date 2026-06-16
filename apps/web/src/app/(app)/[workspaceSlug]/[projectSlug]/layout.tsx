@@ -1,0 +1,63 @@
+import { notFound } from "next/navigation";
+
+import { ProjectProvider } from "@/lib/context/workspace-context";
+import { Hydrate } from "@/lib/query/hydrate";
+import { queryKeys } from "@/lib/query/keys";
+import { getWorkspaceBySlug } from "@/lib/data/workspaces";
+import { getProjectBySlug } from "@/lib/data/projects";
+import { getDocumentTree } from "@/lib/data/documents";
+import { SpecTreePanel } from "@/components/document/spec-tree-panel";
+import { GenerateRfcDialog } from "@/features/generate/generate-rfc-dialog";
+
+/**
+ * Project context layer. Resolves the project, seeds the spec tree into the
+ * Query cache, provides project context, and renders the spec-tree panel as a
+ * second column beside the routed content (overview, doc view, sub-views).
+ */
+export default async function ProjectLayout({
+  children,
+  panel,
+  params,
+}: {
+  children: React.ReactNode;
+  /**
+   * The `@panel` parallel-route slot (AI chat panel; persists across nav).
+   * Optional in the type so it satisfies Next's generated `LayoutProps`
+   * constraint (named slots are injected by Next at render time).
+   */
+  panel?: React.ReactNode;
+  params: Promise<{ workspaceSlug: string; projectSlug: string }>;
+}) {
+  const { workspaceSlug, projectSlug } = await params;
+  const workspace = await getWorkspaceBySlug(workspaceSlug);
+  if (!workspace) notFound();
+
+  const project = await getProjectBySlug(workspace.id, projectSlug);
+  if (!project) notFound();
+
+  return (
+    <ProjectProvider
+      value={{
+        projectId: project.id,
+        projectSlug: project.slug,
+        projectName: project.name,
+      }}
+    >
+      <Hydrate
+        prefetch={async (qc) => {
+          await qc.prefetchQuery({
+            queryKey: queryKeys.documents.tree(project.id),
+            queryFn: () => getDocumentTree(project.id),
+          });
+        }}
+      >
+        <div className="flex min-h-0 flex-1">
+          <SpecTreePanel projectName={project.name} />
+          <div className="min-w-0 flex-1 overflow-auto">{children}</div>
+          {panel}
+        </div>
+        <GenerateRfcDialog />
+      </Hydrate>
+    </ProjectProvider>
+  );
+}

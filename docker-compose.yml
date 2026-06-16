@@ -1,0 +1,97 @@
+name: forgespecs
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: forgespecs
+      POSTGRES_PASSWORD: forgespecs
+      POSTGRES_DB: forgespecs
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forgespecs -d forgespecs"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override hosts to the in-network service names.
+      DATABASE_URL: postgresql://forgespecs:forgespecs@postgres:5432/forgespecs?schema=public
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  collab:
+    build:
+      context: .
+      dockerfile: apps/collab/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://forgespecs:forgespecs@postgres:5432/forgespecs?schema=public
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "1234:1234"
+    healthcheck:
+      test:
+        ["CMD-SHELL", "node -e \"fetch('http://localhost:1234/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Background worker — BullMQ consumer for async embedding (and future AI jobs).
+  # Shares packages/db + packages/ai with web/collab. If REDIS_URL is unset the
+  # worker exits cleanly (producers run inline), so this service is optional.
+  worker:
+    build:
+      context: .
+      dockerfile: apps/collab/Dockerfile
+    restart: unless-stopped
+    command: ["pnpm", "--filter", "@forgespecs/jobs", "worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://forgespecs:forgespecs@postgres:5432/forgespecs?schema=public
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
