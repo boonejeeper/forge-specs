@@ -16,6 +16,7 @@ COPY packages/config/package.json packages/config/
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 COPY packages/ai/package.json packages/ai/
+COPY packages/jobs/package.json packages/jobs/
 COPY apps/web/package.json apps/web/
 COPY apps/collab/package.json apps/collab/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \

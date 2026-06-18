@@ -16,6 +16,8 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc ./
 COPY packages/config/package.json packages/config/
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
+COPY packages/ai/package.json packages/ai/
+COPY packages/jobs/package.json packages/jobs/
 COPY apps/web/package.json apps/web/
 COPY apps/collab/package.json apps/collab/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
@@ -25,6 +27,16 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Placeholder env that satisfies @forgespecs/config's zod schema during
+# `next build` (page data collection imports config). Real values are
+# provided at runtime via compose `env_file`.
+ENV DATABASE_URL="postgresql://placeholder:placeholder@placeholder:5432/placeholder?schema=public" \
+    OPENROUTER_API_KEY="placeholder" \
+    BETTER_AUTH_SECRET="placeholder" \
+    GITHUB_CLIENT_ID="placeholder" \
+    GITHUB_CLIENT_SECRET="placeholder" \
+    GOOGLE_CLIENT_ID="placeholder" \
+    GOOGLE_CLIENT_SECRET="placeholder"
 # Re-link workspace node_modules then generate Prisma client and build Next.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --offline

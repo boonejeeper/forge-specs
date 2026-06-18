@@ -44,33 +44,37 @@ Scoped package names: `@forgespecs/config`, `@forgespecs/db`, `@forgespecs/core`
 
 ## Getting started
 
+### One-command (Docker)
+
+```bash
+cp .env.example .env          # fill in secrets (OpenRouter key, OAuth, etc.)
+docker compose up --build     # app :3000, collab :1234, postgres, redis
+```
+
+A one-off `migrate` service runs `prisma migrate deploy` against postgres
+before app/collab/worker start, so a fresh `docker compose up` is the only
+command needed.
+
+### Local dev (hot reload)
+
 ```bash
 # 1. Install
 pnpm install
 
 # 2. Configure env
-cp .env.example .env   # then fill in secrets (OpenRouter key, OAuth, etc.)
+cp .env.example .env
 
 # 3. Start infra (Postgres + Redis)
 docker compose up -d postgres redis
 
-# 4. Apply the schema + raw SQL (extensions, HNSW, tsvector trigger, GIN)
+# 4. Apply migrations (idempotent — re-running is a no-op)
 pnpm --filter @forgespecs/db exec prisma migrate deploy
-#   (or, for the very first bootstrap against a fresh DB:)
-#   pnpm --filter @forgespecs/db exec prisma db push
-#   psql "$DATABASE_URL" -f packages/db/prisma/migrations/00000000000001_init_extensions_search/migration.sql
 
 # 5. Generate the Prisma client
 pnpm --filter @forgespecs/db exec prisma generate
 
 # 6. Run the web app
-pnpm --filter web dev      # http://localhost:3000
-```
-
-### Full docker-compose
-
-```bash
-docker compose up --build     # app :3000, collab :1234, postgres, redis
+pnpm --filter web dev         # http://localhost:3000
 ```
 
 ## Scripts

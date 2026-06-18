@@ -32,6 +32,23 @@ services:
       timeout: 3s
       retries: 10
 
+  # One-off schema migration. Runs `prisma migrate deploy` against postgres and
+  # exits 0. App/collab/worker wait on `service_completed_successfully` so the
+  # first `docker compose up` is the only command needed.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/collab/Dockerfile
+    command:
+      ["sh", "-c", "cd /app/packages/db && pnpm exec prisma migrate deploy"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://forgespecs:forgespecs@postgres:5432/forgespecs?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   app:
     build:
       context: .
@@ -49,6 +66,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   collab:
     build:
@@ -72,6 +91,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   # Background worker — BullMQ consumer for async embedding (and future AI jobs).
   # Shares packages/db + packages/ai with web/collab. If REDIS_URL is unset the
@@ -91,6 +112,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   postgres-data:
