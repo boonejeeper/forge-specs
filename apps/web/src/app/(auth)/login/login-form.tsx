@@ -134,6 +134,12 @@ export function LoginForm({ ssoProviders }: { ssoProviders: SsoButton[] }) {
           Create one
         </Link>
       </p>
+      <p className="mt-2 text-center text-xs text-muted-foreground">
+        New here?{" "}
+        <Link href="/guide" className="underline">
+          Read the guide
+        </Link>
+      </p>
     </div>
   );
 }

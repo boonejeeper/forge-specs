@@ -27,8 +27,12 @@ import type { ProjectSummary } from "@/lib/data/projects";
  * Lists the workspace's projects in the sidebar. RSC-seeded into the Query
  * cache by the workspace layout, then client-interactive (create / rename /
  * archive). Active project is highlighted from the pathname.
+ *
+ * `collapsed` (driven by the workspace sidebar's rail state) renders an
+ * icon-only list — initials per project, no nav/archive controls. The rail row
+ * stays clickable so users can jump projects without expanding.
  */
-export function ProjectSidebar() {
+export function ProjectSidebar({ collapsed = false }: { collapsed?: boolean }) {
   const { workspaceId, workspaceSlug } = useWorkspace();
   const pathname = usePathname();
   const { data: projects = [] } = useProjects(workspaceId);
@@ -37,6 +41,50 @@ export function ProjectSidebar() {
 
   const visible = projects.filter((p) => showArchived || !p.archived);
   const archivedCount = projects.filter((p) => p.archived).length;
+
+  if (collapsed) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-1 pt-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          aria-label="New project"
+          title="New project"
+          onClick={() => setCreateOpen(true)}
+        >
+          <Plus className="size-4" />
+        </Button>
+        <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto pt-1">
+          {visible.map((p) => {
+            const active = pathname.startsWith(`/${workspaceSlug}/${p.slug}`);
+            return (
+              <Link
+                key={p.id}
+                href={`/${workspaceSlug}/${p.slug}`}
+                title={p.name}
+                aria-label={p.name}
+                className={cn(
+                  "flex size-8 shrink-0 items-center justify-center rounded text-[10px] font-semibold",
+                  active
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+                  p.archived && "opacity-60",
+                )}
+              >
+                {initials(p.name)}
+              </Link>
+            );
+          })}
+        </nav>
+        <CreateProjectDialog
+          workspaceId={workspaceId}
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -91,6 +139,14 @@ export function ProjectSidebar() {
       />
     </div>
   );
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("");
 }
 
 function ProjectRow({

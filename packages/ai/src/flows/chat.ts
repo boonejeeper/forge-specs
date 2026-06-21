@@ -41,6 +41,8 @@ import {
   getDocumentInput,
   getDependenciesInput,
   proposeEditInput,
+  proposeActionInput,
+  getOnboardingStateInput,
 } from "./tool-schemas";
 import { dependencyClosure, reachableDocIds } from "@forgespecs/core/search";
 
@@ -56,6 +58,18 @@ export interface ChatFlowParams {
   /** Optional workspace/project narrowing for the RBAC allow-list. */
   workspaceId?: string;
   projectId?: string;
+  /**
+   * When true, switch to onboarding/guidance posture: bot calls
+   * getOnboardingState first, refuses off-topic, proposes ONE concrete next
+   * action via proposeAction. Default `false` (normal authoring chat).
+   */
+  guidanceMode?: boolean;
+  /**
+   * Server-side onboarding state injector. The route resolves this from
+   * computeOnboardingState() and returns it from the read tool. Pure function
+   * so this package stays DB-agnostic.
+   */
+  getOnboardingState?: () => Promise<unknown>;
 }
 
 const SYSTEM = `You are ForgeSpecs' AI architect assistant. You help authors write and refine technical specs (Visions, PRDs, RFCs, ADRs, API specs, DB schemas, task plans).
@@ -63,7 +77,19 @@ const SYSTEM = `You are ForgeSpecs' AI architect assistant. You help authors wri
 Rules:
 - Ground answers in the provided context and the spec tools. When unsure, use searchSpecs / getDocument / getDependencies rather than guessing.
 - When the user asks you to change a document, call proposeEdit with the full revised text. NEVER claim you edited a document — your edits become reviewable suggestions a human approves.
+- For whole-document operations (format, restructure, refactor terminology, expand thin sections), first call getDocument to read the current state, then emit a SEQUENCE of proposeEdit calls — one per affected block, each with the full revised text for that block. Each becomes its own suggestion the user accepts independently.
+- proposeEdit can target ANY document the user can read, not just the one they're currently viewing — pass the documentId explicitly. Use this when the user references another spec by name ("tidy up the API spec"). Use searchSpecs first to resolve the title to an id.
 - Be concise and concrete. Prefer linking related specs by title.`;
+
+const GUIDANCE_SYSTEM = `You are ForgeSpecs' onboarding guide — the most efficient ForgeSpecs user the team has. Your job is to move the current user forward by ONE concrete step. You answer in two short paragraphs at most.
+
+Rules:
+- Before your first suggestion of the conversation, call getOnboardingState to see what the user has and hasn't done yet. Cite which signal triggered your suggestion (e.g. "you have no ingest source, so → import").
+- For any state change (new project, new doc, start ingest, status flip, or navigation), call proposeAction with ONE high-confidence intent and a one-sentence rationale. Do NOT chain multiple proposeAction calls — pick the highest-value single move.
+- If proposeAction would be guesswork, set confidence to "low" and tell the user it's a guess.
+- Refuse politely if the user asks about anything not directly related to using ForgeSpecs ("I can only help with ForgeSpecs — try /guide for docs").
+- Never claim to have done something the user hasn't confirmed by clicking Accept on a proposeAction card.
+- When the user asks "what should I do next?" with no specific context, the right move is almost always: call getOnboardingState, then propose the single step the state implies.`;
 
 /**
  * Build the bound tool set. `searchSpecs`/`getDocument`/`getDependencies`
@@ -78,8 +104,10 @@ export function buildChatTools(params: {
   userId: string;
   workspaceId?: string;
   projectId?: string;
+  /** Optional read-only injector for the guidance-mode getOnboardingState tool. */
+  getOnboardingState?: () => Promise<unknown>;
 }) {
-  const { prisma, userId, workspaceId, projectId } = params;
+  const { prisma, userId, workspaceId, projectId, getOnboardingState } = params;
 
   const allowList = async (): Promise<string[]> =>
     readableDocumentIds(prisma, { userId, workspaceId, projectId });
@@ -194,6 +222,30 @@ export function buildChatTools(params: {
         "Propose a reviewable edit to a document. The user must confirm; on confirm it becomes a track-changes Suggestion they approve. Provide the FULL revised text for the targeted block.",
       inputSchema: proposeEditInput,
     }),
+
+    // Guidance-mode read tool. Returns the state object computeOnboardingState
+    // produces — workspace/project/source-or-doc/review/approval flags + signals.
+    // Server-executed; injected by the route so this package stays DB-agnostic.
+    getOnboardingState: tool({
+      description:
+        "Read the user's onboarding state: which setup milestones are done, what's next, and signals like whether AI is configured and whether local-path ingest is enabled. Call this BEFORE the first suggestion of a guidance conversation so your suggestion is grounded.",
+      inputSchema: getOnboardingStateInput,
+      execute: async () => {
+        if (!getOnboardingState) {
+          return { error: "Onboarding state is unavailable in this context." };
+        }
+        return getOnboardingState();
+      },
+    }),
+
+    // Guidance-mode client-confirmed action tool. No execute — the chat panel
+    // renders a confirmation card per `kind` and, on confirm, calls the
+    // matching server action through the existing RBAC chokepoint.
+    proposeAction: tool({
+      description:
+        "Propose ONE concrete next action the user can confirm with a click: createProject / createDocument / startRepoIngest / changeDocumentStatus / navigate. The user must click Accept; you NEVER bypass that. Include a one-sentence rationale and confidence (high/medium/low).",
+      inputSchema: proposeActionInput,
+    }),
   };
 }
 
@@ -205,20 +257,49 @@ export function buildChatTools(params: {
 export async function runChat(
   params: ChatFlowParams,
 ): Promise<StreamTextResult<ChatTools, never>> {
-  const { prisma, userId, messages, contextBlock, workspaceId, projectId } = params;
+  const {
+    prisma,
+    userId,
+    messages,
+    contextBlock,
+    workspaceId,
+    projectId,
+    guidanceMode,
+    getOnboardingState,
+  } = params;
 
-  const system =
-    contextBlock && contextBlock.trim().length > 0
-      ? `${SYSTEM}\n\n# Context\n${contextBlock}`
-      : SYSTEM;
+  const base = guidanceMode ? GUIDANCE_SYSTEM : SYSTEM;
 
-  const modelMessages: ModelMessage[] = await convertToModelMessages(messages);
+  // Split the system instructions into TWO messages: a static prelude that is
+  // byte-identical across every request (cache candidate) and a per-request
+  // context block. OpenRouter's automatic prefix caching on Anthropic models
+  // engages on identical leading messages — keeping the static prelude as the
+  // first message maximizes hit rate. We don't promise cache hits (the OpenAI-
+  // compatible adapter doesn't expose cache_control), but we structure for it.
+  const modelMessages: ModelMessage[] = [
+    { role: "system", content: base },
+  ];
+  if (contextBlock && contextBlock.trim().length > 0) {
+    modelMessages.push({
+      role: "system",
+      content: `# Context\n${contextBlock}`,
+    });
+  }
+  modelMessages.push(...(await convertToModelMessages(messages)));
 
+  // Guidance mode is a constrained loop (read state → propose one action with
+  // a one-sentence rationale). Haiku-class handles it cleanly at a fraction of
+  // Sonnet cost; normal authoring chat stays on `smart`.
   return streamText({
-    model: languageModel("smart"),
-    system,
+    model: languageModel(guidanceMode ? "fast" : "smart"),
     messages: modelMessages,
-    tools: buildChatTools({ prisma, userId, workspaceId, projectId }),
+    tools: buildChatTools({
+      prisma,
+      userId,
+      workspaceId,
+      projectId,
+      getOnboardingState,
+    }),
     // Allow a few tool round-trips before the model must answer.
     stopWhen: stepCountIs(5),
   });

@@ -8,8 +8,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * Floating toggle for the AI assistant panel (also bound to ⌘/Ctrl+J). Rendered
- * in the app shell so it is available on every signed-in route; the panel itself
- * is the `@panel` parallel route and reads `aiPanelOpen` from this same store.
+ * in the app shell so it is available on every signed-in route; the panel is
+ * also mounted at the app shell and reads `aiPanelOpen` from this same store.
  */
 export function AiPanelToggle() {
   const open = useUiStore((s) => s.aiPanelOpen);

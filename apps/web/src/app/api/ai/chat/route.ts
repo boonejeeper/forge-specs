@@ -13,6 +13,7 @@ import type { UIMessage } from "ai";
 import { auth } from "@/lib/auth/auth";
 import { can } from "@/lib/auth/rbac";
 import { rateLimit, tooManyRequests } from "@/lib/ratelimit/limiter";
+import { computeOnboardingState } from "@/lib/data/onboarding";
 
 /**
  * POST /api/ai/chat — streaming spec-aware chat.
@@ -38,6 +39,12 @@ interface ChatBody {
   selectionText?: string;
   workspaceId?: string;
   projectId?: string;
+  /**
+   * Optional explicit toggle from the client; when omitted the route defaults
+   * `guidanceMode = true` for short conversations on the project landing
+   * (no documentId, history length < 4).
+   */
+  guidanceMode?: boolean;
 }
 
 /** Token budget for assembled context (leaves room for history + tools). */
@@ -69,6 +76,11 @@ export async function POST(request: Request): Promise<Response> {
   if (!Array.isArray(messages)) {
     return Response.json({ error: "messages[] required" }, { status: 400 });
   }
+
+  // Guidance mode: explicit client toggle wins; otherwise default on for fresh
+  // conversations with no doc focus (the "what should I do next?" surface).
+  const guidanceMode =
+    body.guidanceMode ?? (!documentId && messages.length <= 4);
 
   // RBAC: ai.invoke at the most-specific scope we have.
   const scope =
@@ -108,6 +120,28 @@ export async function POST(request: Request): Promise<Response> {
     }
   }
 
+  // Resolve the slugs (used by the onboarding tool's CTA hrefs) once per request
+  // so the model and the panel emit the same canonical app paths.
+  const [workspaceSlug, projectSlug] = await Promise.all([
+    workspaceId
+      ? prisma.workspace
+          .findUnique({ where: { id: workspaceId }, select: { slug: true } })
+          .then((w) => w?.slug ?? undefined)
+      : Promise.resolve<string | undefined>(undefined),
+    workspaceId && projectId
+      ? prisma.project
+          .findUnique({ where: { id: projectId }, select: { slug: true } })
+          .then((p) => p?.slug ?? undefined)
+      : Promise.resolve<string | undefined>(undefined),
+  ]);
+  const fetchOnboarding = async (): Promise<unknown> =>
+    computeOnboardingState({
+      workspaceId,
+      workspaceSlug,
+      projectId,
+      projectSlug,
+    });
+
   try {
     const result = await runChat({
       prisma,
@@ -117,6 +151,8 @@ export async function POST(request: Request): Promise<Response> {
       messages,
       workspaceId,
       projectId,
+      guidanceMode,
+      getOnboardingState: fetchOnboarding,
     });
     return result.toUIMessageStreamResponse();
   } catch (err) {

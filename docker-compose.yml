@@ -59,6 +59,12 @@ services:
       # Override hosts to the in-network service names.
       DATABASE_URL: postgresql://forgespecs:forgespecs@postgres:5432/forgespecs?schema=public
       REDIS_URL: redis://redis:6379
+      # M12: expose the workspace repo to the in-container ingest flow as a
+      # read-only mount under /repo. INGEST_LOCAL_ALLOWED_ROOTS is the allowlist
+      # the path guard validates the user-supplied path against.
+      INGEST_LOCAL_ALLOWED_ROOTS: /repo
+    volumes:
+      - ./:/repo:ro
     ports:
       - "3000:3000"
     depends_on:

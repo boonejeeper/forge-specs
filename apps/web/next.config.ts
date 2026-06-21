@@ -19,6 +19,8 @@ const nextConfig: NextConfig = {
       "../../node_modules/.pnpm/@prisma+client@*/node_modules/.prisma/client/**/*",
       "../../node_modules/.pnpm/@prisma+client@*/node_modules/@prisma/client/**/*",
       "../../node_modules/.pnpm/@prisma+engines@*/node_modules/@prisma/engines/**/*",
+      // Runbook markdown — read at runtime by app/(marketing)/guide/*.
+      "../../docs/guide/**/*",
     ],
   },
   serverExternalPackages: ["@prisma/client"],

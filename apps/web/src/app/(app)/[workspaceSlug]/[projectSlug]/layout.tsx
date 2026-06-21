@@ -13,19 +13,15 @@ import { GenerateRfcDialog } from "@/features/generate/generate-rfc-dialog";
  * Project context layer. Resolves the project, seeds the spec tree into the
  * Query cache, provides project context, and renders the spec-tree panel as a
  * second column beside the routed content (overview, doc view, sub-views).
+ *
+ * The AI chat panel is mounted at the app-shell layer (`(app)/layout.tsx`) so
+ * it persists across ALL signed-in navigation — not just within a project.
  */
 export default async function ProjectLayout({
   children,
-  panel,
   params,
 }: {
   children: React.ReactNode;
-  /**
-   * The `@panel` parallel-route slot (AI chat panel; persists across nav).
-   * Optional in the type so it satisfies Next's generated `LayoutProps`
-   * constraint (named slots are injected by Next at render time).
-   */
-  panel?: React.ReactNode;
   params: Promise<{ workspaceSlug: string; projectSlug: string }>;
 }) {
   const { workspaceSlug, projectSlug } = await params;
@@ -54,7 +50,6 @@ export default async function ProjectLayout({
         <div className="flex min-h-0 flex-1">
           <SpecTreePanel projectName={project.name} />
           <div className="min-w-0 flex-1 overflow-auto">{children}</div>
-          {panel}
         </div>
         <GenerateRfcDialog />
       </Hydrate>

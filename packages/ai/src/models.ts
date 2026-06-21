@@ -12,8 +12,11 @@ import { getProvider } from "./provider";
  *  - `embed` — embeddings, 1536-dim (matches the pgvector column).
  *  - `smart` — the high-capability chat/generation model (RFC/architecture
  *    drafting, refine). Default anthropic/claude-sonnet-4 via OpenRouter.
- *  - `fast`  — the cheap/low-latency model (summaries, classification, tool
- *    routing). Default a small/cheap model.
+ *  - `fast`  — the cheap/low-latency model. Use it for guidance/onboarding
+ *    chat, intent routing, summaries, and any short structured-output task
+ *    where Sonnet is overkill. Default claude-haiku-4-5 — keeps the request on
+ *    the same provider family as `smart` (so OpenRouter's prefix cache can
+ *    engage on identical system messages) and is materially cheaper.
  *
  * All three are overridable via env (AI_MODEL_SMART / AI_MODEL_FAST /
  * AI_MODEL_EMBED) read lazily at first use, so build never needs them and a
@@ -22,7 +25,7 @@ import { getProvider } from "./provider";
 const DEFAULTS = {
   embed: "openai/text-embedding-3-small",
   smart: "anthropic/claude-sonnet-4",
-  fast: "openai/gpt-4o-mini",
+  fast: "anthropic/claude-haiku-4.5",
 } as const;
 
 export type ModelAlias = keyof typeof DEFAULTS;

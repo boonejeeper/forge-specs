@@ -69,6 +69,13 @@ const envSchema = z.object({
   COLLAB_REDIS_BACKPLANE: z
     .enum(["0", "1", "true", "false"])
     .optional(),
+
+  // Repo ingest (M12). CSV of absolute paths under which a LOCAL ingest is
+  // allowed. Empty → local mode disabled (the form hides it). Symlinks that
+  // escape the allowlist are rejected at resolve time. INGEST_MAX_BYTES caps
+  // an aggregate download/walk; rejects above this size with a clear error.
+  INGEST_LOCAL_ALLOWED_ROOTS: z.string().optional(),
+  INGEST_MAX_BYTES: z.coerce.number().int().positive().default(104_857_600),
 });
 
 export type Env = z.infer<typeof envSchema>;

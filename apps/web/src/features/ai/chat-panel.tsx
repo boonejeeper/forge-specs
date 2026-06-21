@@ -1,24 +1,42 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
 import type { UIMessage } from "ai";
-import { Bot, Send, Check, X, Sparkles } from "lucide-react";
+import {
+  Bot,
+  Send,
+  Check,
+  X,
+  Sparkles,
+  ArrowRight,
+  Compass,
+  AlignLeft,
+  Type,
+  Expand,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/lib/store/ui";
 import { proposeEditSuggestion } from "@/lib/actions/ai";
+import { createProject } from "@/lib/actions/projects";
+import { createDocument, changeDocumentStatus } from "@/lib/actions/documents";
+import { startRepoIngest } from "@/lib/actions/ingest";
+import type { DocumentType, DocumentStatus } from "@forgespecs/db";
 import type { Scope } from "@forgespecs/core";
 
 /**
- * AI chat side panel. Lives in the `@panel` PARALLEL ROUTE so it persists across
- * spec navigation (its state survives route changes within the project segment).
+ * AI chat side panel. Mounted at the app-shell layer (`(app)/layout.tsx`) so
+ * it persists across ALL signed-in navigation — workspace landing, activity,
+ * inbox, settings, home, welcome, doc routes — not just within a project.
  *
- * Context auto-loads from the UI store (`aiContext`): the active editor publishes
- * the current document id, scope, and selection there, and we forward them in
- * the request body so the server assembles graph+semantic context for the doc.
+ * Context auto-loads from the UI store (`aiContext`): `AiContextSync` pushes
+ * the current workspace/project from the URL, and the active editor publishes
+ * documentId + selection. The server assembles graph+semantic context against
+ * whichever pieces are present (workspace-only is fine — no doc retrieval).
  *
  * Tool confirmation: when the model calls `proposeEdit` (a client-handled tool —
  * no server execute), we render a confirmation card. On confirm we route through
@@ -56,6 +74,7 @@ export function ChatPanel() {
     transport,
   });
   const [input, setInput] = React.useState("");
+  const router = useRouter();
 
   if (!aiPanelOpen) return null;
 
@@ -67,6 +86,10 @@ export function ChatPanel() {
     setInput("");
   };
 
+  // Project scope when we have both ids; workspace scope when only the workspace
+  // id is set. Lets the panel work on workspace-level routes (where the bot can
+  // still navigate, search, or createProject) — the chat route already handles
+  // workspace-only scope via the existing RBAC check.
   const scope: Scope | null =
     aiContext.workspaceId && aiContext.projectId
       ? {
@@ -74,7 +97,9 @@ export function ChatPanel() {
           workspaceId: aiContext.workspaceId,
           projectId: aiContext.projectId,
         }
-      : null;
+      : aiContext.workspaceId
+        ? { kind: "workspace", workspaceId: aiContext.workspaceId }
+        : null;
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col border-l bg-card">
@@ -85,10 +110,57 @@ export function ChatPanel() {
 
       <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
         {messages.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            Ask about this spec, search the repository, or request an edit. I
-            propose changes as suggestions you approve.
-          </p>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Ask about this spec, search the repository, or request an edit. I
+              propose changes as suggestions you approve.
+            </p>
+            <button
+              type="button"
+              onClick={() => void sendMessage({ text: "What should I do next?" })}
+              className="flex w-full items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-left text-sm transition-colors hover:bg-primary/10"
+            >
+              <Compass className="size-4 text-primary" />
+              <span className="font-medium">What should I do next?</span>
+              <span className="ml-auto text-xs text-muted-foreground">
+                Guided
+              </span>
+            </button>
+            {aiContext.documentId ? (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  On this document
+                </p>
+                <QuickAction
+                  icon={AlignLeft}
+                  label="Format this document"
+                  onClick={() =>
+                    void sendMessage({
+                      text: "Format this entire document for consistency: heading hierarchy, list style, code-block language tags, terminology. Propose edits block by block.",
+                    })
+                  }
+                />
+                <QuickAction
+                  icon={Expand}
+                  label="Expand the concepts"
+                  onClick={() =>
+                    void sendMessage({
+                      text: "Read this document and expand any thin sections with concrete detail. Propose edits block by block.",
+                    })
+                  }
+                />
+                <QuickAction
+                  icon={Type}
+                  label="Refactor terminology"
+                  onClick={() =>
+                    void sendMessage({
+                      text: "Identify inconsistent terminology in this document and propose unified replacements as edits.",
+                    })
+                  }
+                />
+              </div>
+            ) : null}
+          </div>
         ) : null}
         {messages.map((m) => (
           <MessageBubble
@@ -96,13 +168,21 @@ export function ChatPanel() {
             message={m}
             documentId={aiContext.documentId}
             scope={scope}
-            onToolResult={(toolCallId, output) =>
+            onPropEditResult={(toolCallId, output) =>
               void addToolResult({
                 tool: "proposeEdit",
                 toolCallId,
                 output,
               })
             }
+            onPropActionResult={(toolCallId, output) =>
+              void addToolResult({
+                tool: "proposeAction",
+                toolCallId,
+                output,
+              })
+            }
+            navigate={(href) => router.push(href)}
           />
         ))}
         {error ? (
@@ -140,16 +220,41 @@ export function ChatPanel() {
   );
 }
 
+function QuickAction({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+    >
+      <Icon className="size-3.5 text-muted-foreground" />
+      <span>{label}</span>
+    </button>
+  );
+}
+
 function MessageBubble({
   message,
   documentId,
   scope,
-  onToolResult,
+  onPropEditResult,
+  onPropActionResult,
+  navigate,
 }: {
   message: UIMessage;
   documentId: string | null;
   scope: Scope | null;
-  onToolResult: (toolCallId: string, output: unknown) => void;
+  onPropEditResult: (toolCallId: string, output: unknown) => void;
+  onPropActionResult: (toolCallId: string, output: unknown) => void;
+  navigate: (href: string) => void;
 }) {
   const isUser = message.role === "user";
   return (
@@ -181,7 +286,19 @@ function MessageBubble({
               part={part}
               documentId={documentId}
               scope={scope}
-              onResult={onToolResult}
+              onResult={onPropEditResult}
+            />
+          );
+        }
+        // proposeAction confirmation card (guidance-mode tool).
+        if (isToolUIPart(part) && getToolName(part) === "proposeAction") {
+          return (
+            <ProposeActionCard
+              key={i}
+              part={part}
+              scope={scope}
+              onResult={onPropActionResult}
+              navigate={navigate}
             />
           );
         }
@@ -281,4 +398,221 @@ function ProposeEditCard({
       )}
     </div>
   );
+}
+
+// ── proposeAction card (guidance-mode action confirmation) ──────────────────
+
+interface ProposeActionPart {
+  toolCallId?: string;
+  state?: string;
+  input?: unknown;
+  output?: unknown;
+}
+
+type ProposeActionInputShape =
+  | {
+      kind: "createProject";
+      rationale: string;
+      confidence?: "high" | "medium" | "low";
+      name: string;
+    }
+  | {
+      kind: "createDocument";
+      rationale: string;
+      confidence?: "high" | "medium" | "low";
+      type: DocumentType;
+      title: string;
+    }
+  | {
+      kind: "startRepoIngest";
+      rationale: string;
+      confidence?: "high" | "medium" | "low";
+      source:
+        | { kind: "LOCAL"; path: string }
+        | { kind: "GITHUB"; ref: string; branch?: string };
+    }
+  | {
+      kind: "changeDocumentStatus";
+      rationale: string;
+      confidence?: "high" | "medium" | "low";
+      documentId: string;
+      status: DocumentStatus;
+    }
+  | {
+      kind: "navigate";
+      rationale: string;
+      confidence?: "high" | "medium" | "low";
+      href: string;
+      label: string;
+    };
+
+function ProposeActionCard({
+  part,
+  scope,
+  onResult,
+  navigate,
+}: {
+  part: ProposeActionPart;
+  scope: Scope | null;
+  onResult: (toolCallId: string, output: unknown) => void;
+  navigate: (href: string) => void;
+}) {
+  const [busy, setBusy] = React.useState(false);
+  const [done, setDone] = React.useState<null | "ok" | "dismissed" | "error">(
+    part.output ? "ok" : null,
+  );
+  const [errMsg, setErrMsg] = React.useState<string | null>(null);
+  const rawInput = (part.input ?? {}) as Partial<ProposeActionInputShape>;
+  const toolCallId = part.toolCallId ?? "";
+
+  if (!rawInput.kind) return null;
+  const input = rawInput as ProposeActionInputShape;
+
+  const confidence = input.confidence ?? "high";
+  const label = actionLabel(input);
+
+  const execute = async (): Promise<void> => {
+    setBusy(true);
+    setErrMsg(null);
+    try {
+      const result = await runAction(input, scope, navigate);
+      setDone("ok");
+      onResult(toolCallId, { status: "executed", ...result });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Action failed.";
+      setErrMsg(msg);
+      setDone("error");
+      onResult(toolCallId, { status: "error", error: msg });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dismiss = (): void => {
+    setDone("dismissed");
+    onResult(toolCallId, { status: "dismissed" });
+  };
+
+  return (
+    <div className="w-full rounded-md border bg-background p-3 text-sm">
+      <div className="mb-1 flex items-center gap-1 font-medium">
+        <ArrowRight className="size-3.5 text-primary" />
+        Suggested: {label}
+      </div>
+      <p className="mb-2 text-xs text-muted-foreground">{input.rationale}</p>
+      {confidence === "low" ? (
+        <p className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-300">
+          This is a guess — confirm only if it matches your intent.
+        </p>
+      ) : null}
+      {done === "ok" ? (
+        <p className="text-xs text-emerald-600 dark:text-emerald-400">Done.</p>
+      ) : done === "dismissed" ? (
+        <p className="text-xs text-muted-foreground">Dismissed.</p>
+      ) : done === "error" ? (
+        <p className="text-xs text-destructive">{errMsg ?? "Failed."}</p>
+      ) : (
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || !canExecute(input, scope)}
+            onClick={() => void execute()}
+          >
+            <Check className="size-3.5" /> Accept
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={dismiss}
+          >
+            <X className="size-3.5" /> Dismiss
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function actionLabel(input: ProposeActionInputShape): string {
+  switch (input.kind) {
+    case "createProject":
+      return `Create project "${input.name}"`;
+    case "createDocument":
+      return `Create ${input.type} "${input.title}"`;
+    case "startRepoIngest":
+      return input.source.kind === "LOCAL"
+        ? `Ingest local path ${input.source.path}`
+        : `Ingest GitHub ${input.source.ref}`;
+    case "changeDocumentStatus":
+      return `Move document to ${input.status}`;
+    case "navigate":
+      return input.label;
+  }
+}
+
+function canExecute(input: ProposeActionInputShape, scope: Scope | null): boolean {
+  if (input.kind === "navigate") return true;
+  if (input.kind === "createProject") {
+    return scope?.kind === "workspace" || scope?.kind === "project";
+  }
+  return scope?.kind === "project";
+}
+
+async function runAction(
+  input: ProposeActionInputShape,
+  scope: Scope | null,
+  navigate: (href: string) => void,
+): Promise<Record<string, unknown>> {
+  switch (input.kind) {
+    case "navigate":
+      navigate(input.href);
+      return { navigated: input.href };
+    case "createProject": {
+      if (scope?.kind !== "workspace" && scope?.kind !== "project") {
+        throw new Error("Open a workspace first.");
+      }
+      const res = await createProject({
+        workspaceId: scope.workspaceId,
+        name: input.name,
+      });
+      return { projectId: res.id, projectSlug: res.slug };
+    }
+    case "createDocument": {
+      if (scope?.kind !== "project") {
+        throw new Error("Open a project first.");
+      }
+      const res = await createDocument({
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        type: input.type,
+        title: input.title,
+      });
+      return { documentId: res.id, slug: res.slug };
+    }
+    case "startRepoIngest": {
+      if (scope?.kind !== "project") {
+        throw new Error("Open a project first.");
+      }
+      const res = await startRepoIngest({
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        source: input.source,
+      });
+      return { jobId: res.jobId };
+    }
+    case "changeDocumentStatus": {
+      if (scope?.kind !== "project") {
+        throw new Error("Open a project first.");
+      }
+      const res = await changeDocumentStatus({
+        documentId: input.documentId,
+        status: input.status,
+        scope,
+      });
+      return { documentId: res.id, status: res.status };
+    }
+  }
 }

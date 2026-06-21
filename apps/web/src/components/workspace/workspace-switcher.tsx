@@ -25,9 +25,11 @@ import type { WorkspaceSummary } from "@/lib/data/workspaces";
 export function WorkspaceSwitcher({
   workspaces,
   currentSlug,
+  collapsed = false,
 }: {
   workspaces: WorkspaceSummary[];
   currentSlug: string;
+  collapsed?: boolean;
 }) {
   const router = useRouter();
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -40,15 +42,26 @@ export function WorkspaceSwitcher({
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
-            className="h-auto w-full justify-start gap-2 px-2 py-2"
+            className={cn(
+              "h-auto gap-2 py-2",
+              collapsed
+                ? "w-8 justify-center px-0"
+                : "w-full justify-start px-2",
+            )}
+            title={collapsed ? (current?.name ?? "Select workspace") : undefined}
+            aria-label={collapsed ? (current?.name ?? "Select workspace") : undefined}
           >
             <span className="flex size-6 shrink-0 items-center justify-center rounded bg-primary text-[10px] font-bold text-primary-foreground">
               {current ? initials(current.name) : "FS"}
             </span>
-            <span className="min-w-0 flex-1 truncate text-left text-sm font-medium">
-              {current?.name ?? "Select workspace"}
-            </span>
-            <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
+            {collapsed ? null : (
+              <>
+                <span className="min-w-0 flex-1 truncate text-left text-sm font-medium">
+                  {current?.name ?? "Select workspace"}
+                </span>
+                <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
+              </>
+            )}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-56">

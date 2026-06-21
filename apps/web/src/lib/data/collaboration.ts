@@ -31,6 +31,30 @@ export async function getReviews(documentId: string): Promise<ReviewDto[]> {
   return listReviews(documentId);
 }
 
+/**
+ * Has ANY document in this project ever been reviewed? Cheap existence check
+ * for the onboarding helper — single Prisma count with an early-exit limit.
+ */
+export async function hasAnyReview(projectId: string): Promise<boolean> {
+  const row = await prisma.review.findFirst({
+    where: { document: { projectId } },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
+/**
+ * Has any document in this project ever been moved to APPROVED status? Used
+ * by the Next Steps card to check off the "first approval" milestone.
+ */
+export async function hasAnyApprovedDoc(projectId: string): Promise<boolean> {
+  const row = await prisma.document.findFirst({
+    where: { projectId, status: "APPROVED" },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
 export interface SuggestionDto {
   id: string;
   status: SuggestionStatus;

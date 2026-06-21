@@ -93,3 +93,6 @@ export {
   type GeneratedAgentPromptsDoc,
 } from "./generate-agent-prompts";
 export { generateChangelog, type ChangelogParams } from "./changelog";
+
+// ── M12 repo ingest ──────────────────────────────────────────────────────────
+export * from "./ingest/index";

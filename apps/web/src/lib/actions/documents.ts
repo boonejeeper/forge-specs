@@ -666,6 +666,117 @@ export async function createDependency(input: {
   return _createDependency(input);
 }
 
+// ── repo ingest (M12) ────────────────────────────────────────────────────────
+
+const _upsertIngestDocument = withPermission(
+  (input: {
+    workspaceId: string;
+    projectId: string;
+    type: DocumentType;
+    title: string;
+    slug: string;
+    sourcePath?: string | null;
+  }) => projectScope(input.workspaceId, input.projectId),
+  "doc.create",
+  async (actor, input): Promise<DocumentResult & { created: boolean }> => {
+    const title = input.title.trim() || input.slug;
+    const existing = await prisma.document.findUnique({
+      where: {
+        projectId_slug: { projectId: input.projectId, slug: input.slug },
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      const updated = await prisma.document.update({
+        where: { id: existing.id },
+        data: {
+          title,
+          type: input.type,
+          ...(input.sourcePath !== undefined ? { sourcePath: input.sourcePath } : {}),
+        },
+        select: DOC_SELECT,
+      });
+      return { ...updated, created: false };
+    }
+    const doc = await prisma.$transaction(async (tx) => {
+      const created = await tx.document.create({
+        data: {
+          projectId: input.projectId,
+          authorId: actor.userId,
+          type: input.type,
+          title,
+          slug: input.slug,
+          sourcePath: input.sourcePath ?? null,
+          frontmatter: { order: 0 } as Prisma.InputJsonValue,
+        },
+        select: DOC_SELECT,
+      });
+      await logActivity(
+        {
+          workspaceId: input.workspaceId,
+          actorId: actor.userId,
+          type: ActivityType.DOCUMENT_CREATED,
+          entityType: "document",
+          entityId: created.id,
+          data: { title, type: input.type, ingested: true },
+        },
+        tx,
+      );
+      return created;
+    });
+    return { ...doc, created: true };
+  },
+);
+
+/**
+ * Upsert (by stable slug) a document from the repo-ingest flow — sets
+ * `sourcePath` so reruns can dedup by file path. Requires `doc.create` (also
+ * gating the update path, matching the create RBAC).
+ */
+export async function upsertIngestDocument(input: {
+  workspaceId: string;
+  projectId: string;
+  type: DocumentType;
+  title: string;
+  slug: string;
+  sourcePath?: string | null;
+}): Promise<DocumentResult & { created: boolean }> {
+  return _upsertIngestDocument(input);
+}
+
+const _markIngestDocumentDeprecated = withPermission(
+  (input: { documentId: string; scope: Scope }) => input.scope,
+  "doc.changeStatus",
+  async (actor, input): Promise<{ id: string }> => {
+    const doc = await prisma.document.update({
+      where: { id: input.documentId },
+      data: { status: "DEPRECATED" },
+      select: { id: true },
+    });
+    await logActivity({
+      workspaceId: input.scope.workspaceId,
+      actorId: actor.userId,
+      type: ActivityType.STATUS_CHANGED,
+      entityType: "document",
+      entityId: doc.id,
+      data: { to: "DEPRECATED", reason: "source-removed" },
+    });
+    return doc;
+  },
+);
+
+/**
+ * Force-deprecate a document whose ingested source file disappeared. Requires
+ * `doc.changeStatus`. Bypasses the full state machine (DEPRECATED is terminal)
+ * because the trigger is automated, not human-driven.
+ */
+export async function markIngestDocumentDeprecated(input: {
+  documentId: string;
+  scope: Scope;
+}): Promise<{ id: string }> {
+  return _markIngestDocumentDeprecated(input);
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 function readOrder(frontmatter: unknown): number | null {

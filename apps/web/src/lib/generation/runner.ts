@@ -18,6 +18,7 @@ import type { GeneratedPlanInput, Scope } from "@forgespecs/core";
 
 import { materializeArchitecture } from "./materialize";
 import { createDocument, saveDocumentContent } from "@/lib/actions/documents";
+import { runRepoIngestJob } from "@/lib/ingest/runner";
 
 /**
  * The generation runner the jobs package invokes (inline when Redis is absent,
@@ -37,6 +38,14 @@ export const runGenerationJob: GenerationRunner = async (generationJobId) => {
   });
   if (!job) {
     console.error(`[generation] job ${generationJobId} not found`);
+    return;
+  }
+
+  // M12 repo ingest dispatches to its own multi-stage runner. It manages its
+  // own progress/status writes and is graceful when the AI key is absent
+  // (verbatim pass still runs), so the apiKey gate below is skipped for it.
+  if (job.kind === "REPO_INGEST") {
+    await runRepoIngestJob(generationJobId);
     return;
   }
 

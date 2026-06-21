@@ -220,6 +220,19 @@ enum GenerationJobKind {
   EPICS
   REPO_STRUCTURE
   AGENT_PROMPTS
+  REPO_INGEST
+}
+
+enum RepoIngestKind {
+  LOCAL
+  GITHUB
+}
+
+enum RepoFileKind {
+  DOC
+  CODE
+  CONFIG
+  BINARY_SKIPPED
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -258,6 +271,8 @@ model Project {
   documents   Document[]
   memberships Membership[]
   generationJobs GenerationJob[]
+  ingestSource   RepoIngestSource?
+  repoFiles      RepoFile[]
 
   @@unique([workspaceId, slug])
   @@index([workspaceId])
@@ -319,6 +334,12 @@ model Document {
 
   currentVersion Int          @default(0)
 
+  // Set on documents imported by the repo-ingest flow (verbatim pass). The
+  // POSIX-relative path within the source repo (e.g. "docs/adr/0001-auth.md").
+  // Used to dedup re-runs and to gate-DEPRECATE documents whose source file
+  // disappeared. Null for human-authored or synthesized docs.
+  sourcePath  String?
+
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
@@ -339,7 +360,70 @@ model Document {
   @@index([projectId])
   @@index([type])
   @@index([status])
+  @@index([projectId, sourcePath])
   @@map("document")
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Repo ingest (M12): turn an existing codebase into a clean documentation set
+// inside a project. RepoIngestSource is the persistent per-project source +
+// optional encrypted PAT; RepoFile is the per-file manifest, kept across runs
+// so re-ingests can diff by sha and skip unchanged work.
+// ──────────────────────────────────────────────────────────────────────────
+
+model RepoIngestSource {
+  id           String         @id @default(cuid())
+  projectId    String         @unique
+  project      Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  kind         RepoIngestKind
+  // LOCAL: absolute path on the server (allowlisted via INGEST_LOCAL_ALLOWED_ROOTS).
+  // GITHUB: "owner/repo".
+  ref          String
+  // Branch to fetch. NULL = use repo default branch (GitHub) / current working
+  // tree (LOCAL).
+  branch       String?
+
+  // AES-256-GCM ciphertext of the GitHub PAT (key derived from
+  // BETTER_AUTH_SECRET via HKDF). NULL for public/local sources. Plaintext never
+  // leaves the worker process.
+  tokenCipher  Bytes?
+  tokenIv      Bytes?
+  tokenTag     Bytes?
+
+  lastIngestAt DateTime?
+
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@map("repo_ingest_source")
+}
+
+model RepoFile {
+  id           String       @id @default(cuid())
+  projectId    String
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // POSIX, repo-relative.
+  path         String
+  // Content sha-256 (hex). Stable across reruns; changes only when bytes change.
+  sha          String
+  bytes        Int
+
+  kind         RepoFileKind
+
+  // Per-file LLM summary (CODE only). NULL for DOC/CONFIG/BINARY_SKIPPED, or
+  // when the AI key is absent. Preserved across reruns when sha is unchanged.
+  summary      String?
+  summaryModel String?
+
+  // Stamped on every walk so the finalize stage can deprecate documents whose
+  // source file is gone (any RepoFile not seen this run).
+  lastSeenAt   DateTime     @default(now())
+
+  @@unique([projectId, path])
+  @@index([projectId, kind])
+  @@map("repo_file")
 }
 
 // Tree of blocks (fractional indexing via `order`). Projection target on compaction.

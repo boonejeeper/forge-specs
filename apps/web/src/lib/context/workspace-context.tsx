@@ -40,6 +40,11 @@ export function useWorkspace(): WorkspaceContextValue {
   return ctx;
 }
 
+/** Workspace context, or null when not inside a workspace route. */
+export function useOptionalWorkspace(): WorkspaceContextValue | null {
+  return React.useContext(WorkspaceContext);
+}
+
 export interface ProjectContextValue {
   projectId: string;
   projectSlug: string;

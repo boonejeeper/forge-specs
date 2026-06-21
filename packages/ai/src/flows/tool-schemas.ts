@@ -74,3 +74,85 @@ export const proposeEditInput = z.object({
     .describe("Short explanation shown to the reviewer."),
 });
 export type ProposeEditInput = z.infer<typeof proposeEditInput>;
+
+/**
+ * Onboarding-state read tool. The route injects the user/scope context; the
+ * model only signals "I want to know what the user has set up so I can advise".
+ */
+export const getOnboardingStateInput = z.object({});
+export type GetOnboardingStateInput = z.infer<typeof getOnboardingStateInput>;
+
+/**
+ * proposeAction — guidance-mode counterpart to proposeEdit. The bot picks ONE
+ * high-confidence next move; the panel renders a confirmation card; on confirm
+ * the matching server action runs through the existing RBAC chokepoint.
+ *
+ * The set is intentionally tiny so the bot's surface area is auditable. There
+ * is no delete / bulk-edit / arbitrary-run kind — every kind here has an
+ * existing user-facing affordance the bot is short-cutting to.
+ */
+export const proposeActionInput = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("createProject"),
+    rationale: z.string().min(1).describe("One-sentence why."),
+    confidence: z.enum(["high", "medium", "low"]).default("high"),
+    name: z.string().min(1).describe("Project display name."),
+  }),
+  z.object({
+    kind: z.literal("createDocument"),
+    rationale: z.string().min(1),
+    confidence: z.enum(["high", "medium", "low"]).default("high"),
+    type: z.enum([
+      "VISION",
+      "PRD",
+      "RFC",
+      "ADR",
+      "API_SPEC",
+      "DB_SCHEMA",
+      "WORKFLOW",
+      "RUNBOOK",
+      "TASK_PLAN",
+    ]),
+    title: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("startRepoIngest"),
+    rationale: z.string().min(1),
+    confidence: z.enum(["high", "medium", "low"]).default("high"),
+    source: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("LOCAL"), path: z.string().min(1) }),
+      z.object({
+        kind: z.literal("GITHUB"),
+        ref: z.string().min(1).describe("owner/repo"),
+        branch: z.string().optional(),
+      }),
+    ]),
+  }),
+  z.object({
+    kind: z.literal("changeDocumentStatus"),
+    rationale: z.string().min(1),
+    confidence: z.enum(["high", "medium", "low"]).default("high"),
+    documentId: z.string().min(1),
+    status: z.enum([
+      "DRAFT",
+      "REVIEW",
+      "APPROVED",
+      "IMPLEMENTING",
+      "IMPLEMENTED",
+      "DEPRECATED",
+    ]),
+  }),
+  z.object({
+    kind: z.literal("navigate"),
+    rationale: z.string().min(1),
+    confidence: z.enum(["high", "medium", "low"]).default("high"),
+    href: z
+      .string()
+      .min(1)
+      .describe(
+        "App-relative path like /ws/proj/ingest or /guide/import-from-repo.",
+      ),
+    label: z.string().min(1).describe("Short button label."),
+  }),
+]);
+export type ProposeActionInput = z.infer<typeof proposeActionInput>;

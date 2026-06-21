@@ -16,7 +16,8 @@
     "./graph/export": "./src/graph/erd-export.ts",
     "./export": "./src/export/index.ts",
     "./templates": "./src/templates/index.ts",
-    "./util": "./src/util/index.ts"
+    "./util": "./src/util/index.ts",
+    "./ingest": "./src/ingest/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
